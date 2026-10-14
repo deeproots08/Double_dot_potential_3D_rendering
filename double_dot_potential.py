@@ -13,9 +13,13 @@ Outputs:
   1. 3D surface of the in-plane potential V(x, y, z=0)
   2. 3D isosurface plot of V(x, y, z) (plotly, if installed; otherwise skipped)
 
+With --interactive, opens a matplotlib window with sliders instead
+(line-cut position, z slice, energy level, detuning, dot spacing, well depth).
+
 Usage:
-  pip install numpy matplotlib plotly scikit-image
+  pip install -r requirements.txt
   python double_dot_potential.py --model quartic --d 50 --eps 0.5
+  python double_dot_potential.py --interactive
 """
 
 import argparse
@@ -45,8 +49,8 @@ def potential(x, y, z, model, d, hw, hwz, v0, sigma, eps, m_eff):
         vxy = 0.5 * m * w**2 * ((xs**2 - ds**2) ** 2 / (4 * ds**2) + ys**2) / MEV
     elif model == "gaussian":
         g = lambda x0: np.exp(-((x - x0) ** 2 + y**2) / (2 * sigma**2))
-        vxy = -v0 * (g(-d) + g(d))
-        vxy -= vxy.min() if np.ndim(vxy) else 0.0
+        # Shift so the well bottoms sit near V = 0 (independent of the grid)
+        vxy = v0 * (1 + np.exp(-2 * d**2 / sigma**2)) - v0 * (g(-d) + g(d))
     else:
         raise ValueError(f"unknown model: {model}")
 
@@ -120,6 +124,97 @@ def plot_isosurface(args):
     print("Saved double_dot_isosurface.html")
 
 
+def interactive(args):
+    """Matplotlib window with sliders for the line cut and potential parameters."""
+    from matplotlib.widgets import Slider, RadioButtons
+
+    span_x, span_y = 2.2 * 100, 1.5 * 100  # fixed axes so sliders don't rescale the view
+    x = np.linspace(-span_x, span_x, 160)
+    y = np.linspace(-span_y, span_y, 110)
+    X, Y = np.meshgrid(x, y)
+
+    fig = plt.figure(figsize=(14, 8))
+    fig.subplots_adjust(left=0.05, right=0.97, top=0.95, bottom=0.42, wspace=0.15)
+    ax3d = fig.add_subplot(1, 2, 1, projection="3d")
+    ax2d = fig.add_subplot(1, 2, 2)
+
+    # (label, attr, min, max, initial)
+    specs = [
+        ("cut y (nm)", "y0", -span_y, span_y, 0.0),
+        ("slice z (nm)", "z0", -20.0, 20.0, 0.0),
+        ("energy E (meV)", "energy", 0.0, args.vmax, 2.0),
+        ("detuning eps (meV)", "eps", -5.0, 5.0, args.eps),
+        ("half spacing d (nm)", "d", 20.0, 100.0, args.d),
+        ("hbar w (meV) [quartic]", "hw", 0.5, 10.0, args.hw),
+        ("depth V0 (meV) [gaussian]", "v0", 1.0, 30.0, args.v0),
+        ("width sigma (nm) [gaussian]", "sigma", 10.0, 60.0, args.sigma),
+        ("hbar wz (meV)", "hwz", 2.0, 30.0, args.hwz),
+    ]
+    sliders = {}
+    for i, (label, key, lo, hi, init) in enumerate(specs):
+        sax = fig.add_axes([0.22, 0.34 - i * 0.035, 0.55, 0.022])
+        sliders[key] = Slider(sax, label, lo, hi, valinit=init)
+
+    rax = fig.add_axes([0.86, 0.22, 0.1, 0.1])
+    radio = RadioButtons(rax, ("quartic", "gaussian"),
+                         active=0 if args.model == "quartic" else 1)
+    state = {"model": args.model}
+
+    def V_at(xx, yy, zz):
+        s = {k: sl.val for k, sl in sliders.items()}
+        return potential(xx, yy, zz, state["model"], s["d"], s["hw"], s["hwz"],
+                         s["v0"], s["sigma"], s["eps"], args.m_eff)
+
+    def redraw(_=None):
+        y0, z0, energy = sliders["y0"].val, sliders["z0"].val, sliders["energy"].val
+        V = np.clip(V_at(X, Y, z0), None, args.vmax)
+        cut = np.clip(V_at(x, y0, z0), None, args.vmax)
+
+        elev, azim = ax3d.elev, ax3d.azim  # keep the user's rotation
+        ax3d.cla()
+        ax3d.plot_surface(X, Y, V, cmap=cm.viridis, rstride=2, cstride=2,
+                          linewidth=0, antialiased=True, alpha=0.85)
+        if V.min() < energy < V.max():
+            ax3d.contour(X, Y, V, levels=[energy], colors="red", linewidths=2)
+        ax3d.plot(x, np.full_like(x, y0), cut, color="red", linewidth=2.5)
+        ax3d.set_xlim(-span_x, span_x)
+        ax3d.set_ylim(-span_y, span_y)
+        ax3d.set_zlim(min(0.0, V.min()), args.vmax)
+        ax3d.set_xlabel("x (nm)")
+        ax3d.set_ylabel("y (nm)")
+        ax3d.set_zlabel("V (meV)")
+        ax3d.set_title(f"V(x, y, z = {z0:.1f} nm), {state['model']}")
+        ax3d.view_init(elev=elev, azim=azim)
+
+        ax2d.cla()
+        ax2d.plot(x, cut, color="C0")
+        ax2d.axhline(energy, color="red", linestyle="--", label=f"E = {energy:.2f} meV")
+        ax2d.fill_between(x, cut, energy, where=cut < energy, color="red", alpha=0.15,
+                          label="classically allowed (V < E)")
+        ax2d.set_xlim(-span_x, span_x)
+        ax2d.set_ylim(min(0.0, cut.min()) - 0.5, args.vmax)
+        ax2d.set_xlabel("x (nm)")
+        ax2d.set_ylabel("V (meV)")
+        ax2d.set_title(f"Line cut at y = {y0:.1f} nm, z = {z0:.1f} nm")
+        ax2d.legend(loc="upper center")
+        ax2d.grid(alpha=0.3)
+        fig.canvas.draw_idle()
+
+    def set_model(label):
+        state["model"] = label
+        redraw()
+
+    for sl in sliders.values():
+        sl.on_changed(redraw)
+    radio.on_clicked(set_model)
+
+    ax3d.view_init(elev=30, azim=-60)
+    redraw()
+    # Keep references alive so the widgets stay responsive
+    fig._widgets = (sliders, radio)
+    return fig
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -133,7 +228,14 @@ def main():
     p.add_argument("--m-eff", type=float, default=0.067, help="effective mass (GaAs: 0.067, Si: 0.19)")
     p.add_argument("--vmax", type=float, default=15.0, help="clip potential above this (meV)")
     p.add_argument("--no-show", action="store_true", help="don't open matplotlib window")
+    p.add_argument("--interactive", action="store_true",
+                   help="open a window with sliders (line cut, energy, detuning, ...)")
     args = p.parse_args()
+
+    if args.interactive:
+        interactive(args)
+        plt.show()
+        return
 
     plot_surface(args)
     plot_isosurface(args)
