@@ -2,10 +2,24 @@
 Follow this repo to visualise double dot potential in 3D. Used claude 
 
 
-## Usage
+## Installing in a virtual environment (Windows, Git Bash)
+
+Create a virtual environment named `venv`, activate it, and install the requirements into it:
 
 ```bash
+python -m venv venv
+source venv/Scripts/activate
 pip install -r requirements.txt
+```
+
+Your prompt shows `(venv)` while it is active. Run `deactivate` to leave it.
+On macOS/Linux, activate with `source venv/bin/activate` instead.
+
+## Usage
+
+With the virtual environment active:
+
+```bash
 python double_dot_potential.py --model quartic --d 50 --eps 0.5
 ```
 
